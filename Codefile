@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>A/B/n Campaign Analyzer</title>
+    <!-- 1. Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. jStat library for statistical calculations (p-value) -->
+    <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
+    <style>
+        /* Custom styles for a cleaner dark mode */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .result-card {
+            background-color: #1f2937; /* gray-800 */
+        }
+        .result-card-header {
+            background-color: #374151; /* gray-700 */
+        }
+        .result-significant {
+            color: #22c55e; /* green-500 */
+        }
+        .result-not-significant {
+            color: #f59e0b; /* amber-500 */
+        }
+        .result-best {
+            border: 2px solid #22c55e;
+            background-color: #1f2937;
+        }
+    </style>
+    <script>
+        // Set up Tailwind dark mode
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                },
+            },
+        }
+    </script>
+</head>
+<body class="bg-gray-900 text-gray-200 min-h-screen p-4 md:p-8">
+    
+    <div class="max-w-4xl mx-auto">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-white mb-2">A/B/n Campaign Analyzer</h1>
+            <p class="text-lg text-gray-400">Find the statistically significant winner from 2 or more variants.</p>
+        </header>
+
+        <!-- Step 1: Variant Count Input -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg mb-6">
+            <h2 class="text-2xl font-semibold mb-4 text-white">1. Setup Your Test</h2>
+            <div class="flex flex-col md:flex-row md:items-end gap-4">
+                <div class="flex-grow">
+                    <label for="num_variants" class="block text-sm font-medium text-gray-300 mb-1">How many variants are you testing?</label>
+                    <input type="number" id="num_variants" value="4" min="2" class="w-full bg-gray-700 border-gray-600 text-white rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+                <button id="generate_fields_btn" class="w-full md:w-auto bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-colors">
+                    Generate Fields
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 2: Data Input -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg mb-6">
+            <h2 class="text-2xl font-semibold mb-4 text-white">2. Enter Campaign Data</h2>
+            <div id="variant_inputs_container" class="space-y-4">
+                <!-- Input fields will be dynamically generated here -->
+            </div>
+        </div>
+        
+        <!-- Step 3: Calculate Button -->
+        <div class="mb-6">
+            <button id="calculate_btn" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg text-lg transition-colors shadow-lg disabled:bg-gray-500" disabled>
+                Analyze Results
+            </button>
+        </div>
+
+        <!-- Step 4: Results Display -->
+        <div id="results_container" class="hidden space-y-6">
+            <!-- Summary Card -->
+            <div id="summary_card" class="result-card p-6 rounded-lg shadow-lg"></div>
+
+            <!-- Overall Test Card -->
+            <div id="overall_test_card" class="result-card rounded-lg shadow-lg overflow-hidden"></div>
+
+            <!-- Post-Hoc Test Card -->
+            <div id="post_hoc_card" class="result-card rounded-lg shadow-lg overflow-hidden"></div>
+
+            <!-- Conclusion Card -->
+            <div id="conclusion_card" class="result-card p-6 rounded-lg shadow-lg border-t-4 border-blue-500"></div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const numVariantsInput = document.getElementById('num_variants');
+            const generateBtn = document.getElementById('generate_fields_btn');
+            const calculateBtn = document.getElementById('calculate_btn');
+            const inputsContainer = document.getElementById('variant_inputs_container');
+            const resultsContainer = document.getElementById('results_container');
+
+            const summaryCard = document.getElementById('summary_card');
+            const overallTestCard = document.getElementById('overall_test_card');
+            const postHocCard = document.getElementById('post_hoc_card');
+            const conclusionCard = document.getElementById('conclusion_card');
+
+            const ALPHA = 0.05; // Industry standard significance level
+
+            // --- 1. UI GENERATION ---
+
+            generateBtn.addEventListener('click', generateInputFields);
+            calculateBtn.addEventListener('click', handleCalculation);
+
+            // Generate initial fields on load
+            generateInputFields();
+
+            function generateInputFields() {
+                const numVariants = parseInt(numVariantsInput.value, 10);
+                if (numVariants < 2) {
+                    alert("You must have at least 2 variants to compare.");
+                    return;
+                }
+                
+                inputsContainer.innerHTML = ''; // Clear old fields
+                
+                for (let i = 0; i < numVariants; i++) {
+                    const variantName = `Variant ${String.fromCharCode(65 + i)}`; // A, B, C...
+                    const fieldHTML = `
+                        <div class="p-4 border border-gray-700 rounded-lg bg-gray-900/50">
+                            <h3 class="text-lg font-semibold text-white mb-3">${variantName}</h3>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="delivered_${i}" class="block text-sm font-medium text-gray-300 mb-1">Delivered (Attempts)</label>
+                                    <input type="number" id="delivered_${i}" class="variant-delivered w-full bg-gray-700 border-gray-600 text-white rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500" min="1" placeholder="e.g., 10000">
+                                </div>
+                                <div>
+                                    <label for="converted_${i}" class="block text-sm font-medium text-gray-300 mb-1">Conversions (e.g., Clicks)</label>
+                                    <input type="number" id="converted_${i}" class="variant-converted w-full bg-gray-700 border-gray-600 text-white rounded-lg p-2 focus:ring-1 focus:ring-blue-500 focus:border-blue-500" min="0" placeholder="e.g., 200">
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    inputsContainer.insertAdjacentHTML('beforeend', fieldHTML);
+                }
+
+                calculateBtn.disabled = false; // Enable calculate button
+            }
+            
+            // --- 2. DATA GATHERING & VALIDATION ---
+
+            function getVariantData() {
+                const variants = [];
+                const numVariants = parseInt(numVariantsInput.value, 10);
+                let isValid = true;
+
+                for (let i = 0; i < numVariants; i++) {
+                    const name = `Variant ${String.fromCharCode(65 + i)}`;
+                    const deliveredEl = document.getElementById(`delivered_${i}`);
+                    const convertedEl = document.getElementById(`converted_${i}`);
+
+                    // Reset error styles
+                    deliveredEl.classList.remove('border-red-500');
+                    convertedEl.classList.remove('border-red-500');
+
+                    const delivered = parseInt(deliveredEl.value, 10);
+                    const converted = parseInt(convertedEl.value, 10);
+
+                    if (isNaN(delivered) || delivered <= 0) {
+                        deliveredEl.classList.add('border-red-500');
+                        isValid = false;
+                    }
+                    if (isNaN(converted) || converted < 0) {
+                        convertedEl.classList.add('border-red-500');
+                        isValid = false;
+                    }
+                    if (!isNaN(delivered) && !isNaN(converted) && converted > delivered) {
+                        convertedEl.classList.add('border-red-500');
+                        isValid = false;
+                    }
+                    
+                    if (isValid) {
+                         variants.push({
+                            name: name,
+                            delivered: delivered,
+                            converted: converted,
+                            rate: converted / delivered,
+                            not_converted: delivered - converted
+                        });
+                    }
+                }
+
+                if (!isValid) {
+                    alert("Please fix the errors in the input fields.\n- 'Delivered' must be a positive number.\n- 'Conversions' cannot be negative or greater than 'Delivered'.");
+                    return null;
+                }
+                return variants;
+            }
+
+            // --- 3. STATISTICAL CALCULATIONS (JS Implementation of Scipy) ---
+
+            /**
+             * Performs a Chi-Squared (χ²) test on a 2D contingency table.
+             * Returns the Chi-Squared statistic (chiSqValue) and the p-value.
+             * This function is a JS reimplementation of scipy.stats.chi2_contingency
+             */
+            function performChiSquaredTest(contingencyTable) {
+                const numRows = contingencyTable.length;
+                const numCols = contingencyTable[0].length;
+
+                // 1. Calculate Row Totals
+                const rowTotals = contingencyTable.map(row => 
+                    row.reduce((sum, val) => sum + val, 0)
+                );
+
+                // 2. Calculate Column Totals
+                const colTotals = new Array(numCols).fill(0);
+                for (let j = 0; j < numCols; j++) {
+                    for (let i = 0; i < numRows; i++) {
+                        colTotals[j] += contingencyTable[i][j];
+                    }
+                }
+
+                // 3. Calculate Grand Total
+                const grandTotal = rowTotals.reduce((sum, val) => sum + val, 0);
+
+                // 4. Calculate Chi-Squared Statistic (χ²)
+                let chiSqValue = 0;
+                for (let i = 0; i < numRows; i++) {
+                    for (let j = 0; j < numCols; j++) {
+                        const expected = (rowTotals[i] * colTotals[j]) / grandTotal;
+                        const observed = contingencyTable[i][j];
+                        if (expected === 0) continue; // Avoid division by zero
+                        chiSqValue += Math.pow(observed - expected, 2) / expected;
+                    }
+                }
+
+                // 5. Calculate Degrees of Freedom
+                const dof = (numRows - 1) * (numCols - 1);
+                
+                // 6. Calculate p-value using jStat's chi-square p-value function
+                // This is the probability of observing a chiSqValue this large or larger by chance.
+                const pValue = 1 - jStat.chisquare.cdf(chiSqValue, dof);
+
+                return { chiSqValue, pValue, dof };
+            }
+
+            /**
+             * Step 1 Test: Run Chi-Squared on all variants at once.
+             */
+            function performOverallTest(variants) {
+                // Build the contingency table: [[conv_A, not_conv_A], [conv_B, not_conv_B], ...]
+                const table = variants.map(v => [v.converted, v.not_converted]);
+                
+                // This is the "omnibus" test.
+                const result = performChiSquaredTest(table);
+                result.isSignificant = result.pValue < ALPHA;
+                return result;
+            }
+            
+            /**
+             * Helper to get all unique combinations for pairwise tests.
+             */
+            function getCombinations(arr) {
+                const combinations = [];
+                for (let i = 0; i < arr.length; i++) {
+                    for (let j = i + 1; j < arr.length; j++) {
+                        combinations.push([arr[i], arr[j]]);
+                    }
+                }
+                return combinations;
+            }
+
+            /**
+             * Step 2 Test: Run pairwise tests with Bonferroni correction.
+             */
+            function performPostHocTests(variants) {
+                const pairs = getCombinations(variants);
+                const numComparisons = pairs.length;
+                
+                // This is the industry-standard Bonferroni Correction.
+                // We make our significance threshold stricter to avoid false positives.
+                const bonferroniAlpha = ALPHA / numComparisons;
+                
+                const findings = [];
+                
+                for (const [v1, v2] of pairs) {
+                    // Create a 2x2 contingency table for just this pair
+                    const pairTable = [
+                        [v1.converted, v1.not_converted],
+                        [v2.converted, v2.not_converted]
+                    ];
+                    
+                    const result = performChiSquaredTest(pairTable);
+                    
+                    if (result.pValue < bonferroniAlpha) {
+                        // This pair is significantly different!
+                        findings.push({ v1, v2, pValue: result.pValue });
+                    }
+                }
+                
+                return { findings, bonferroniAlpha, numComparisons };
+            }
+
+            // --- 4. CALCULATION & RENDERING ---
+
+            function handleCalculation() {
+                // 1. Get and validate data
+                const variants = getVariantData();
+                if (!variants) return;
+
+                // 2. Run Step 1: Overall Test
+                const overallResult = performOverallTest(variants);
+
+                // 3. Run Step 2: Post-Hoc Tests (if needed)
+                let postHocResult = null;
+                if (overallResult.isSignificant) {
+                    postHocResult = performPostHocTests(variants);
+                }
+
+                // 4. Render all results
+                renderResults(variants, overallResult, postHocResult);
+            }
+
+            function renderResults(variants, overallResult, postHocResult) {
+                resultsContainer.classList.remove('hidden');
+                
+                // Find best variant by rate
+                const sortedVariants = [...variants].sort((a, b) => b.rate - a.rate);
+                const bestVariant = sortedVariants[0];
+
+                // --- Render Summary Card ---
+                let summaryHTML = `<h2 class="text-2xl font-semibold mb-4 text-white">Performance Summary</h2>`;
+                summaryHTML += `<div class="space-y-3">`;
+                sortedVariants.forEach((v, index) => {
+                    const isBest = v.name === bestVariant.name;
+                    summaryHTML += `
+                        <div class_name="result-card p-4 rounded-lg flex items-center justify-between ${isBest ? 'result-best' : 'bg-gray-800'}">
+                            <div class="flex items-center">
+                                <span class="text-lg font-bold ${isBest ? 'text-green-400' : 'text-gray-400'} mr-4">#${index + 1}</span>
+                                <div>
+                                    <span class="text-xl font-bold ${isBest ? 'text-white' : 'text-gray-200'}">${v.name}</span>
+                                    <span class="text-sm text-gray-400 block">${v.converted.toLocaleString()} / ${v.delivered.toLocaleString()}</span>
+                                </div>
+                            </div>
+                            <div class="text-right">
+                                <span class="text-2xl font-bold ${isBest ? 'text-white' : 'text-gray-200'}">${(v.rate * 100).toFixed(3)}%</span>
+                                <span class="text-sm text-gray-400 block">Conversion Rate</span>
+                            </div>
+                        </div>
+                    `;
+                });
+                summaryHTML += `</div>`;
+                summaryCard.innerHTML = summaryHTML;
+
+                // --- Render Overall Test Card ---
+                const overallSignificanceClass = overallResult.isSignificant ? 'result-significant' : 'result-not-significant';
+                const overallSignificanceText = overallResult.isSignificant ? 'Significant' : 'Not Significant';
+                
+                overallTestCard.innerHTML = `
+                    <div class="result-card-header p-4">
+                        <h2 class="text-xl font-semibold text-white">Step 1: Overall Chi-Squared (χ²) Test</h2>
+                    </div>
+                    <div class="p-6 space-y-4">
+                        <p class="text-gray-300">This test checks if there is *any* significant difference among all variants. It answers: "Is there a winner in this group?"</p>
+                        <div class="text-center bg-gray-900 p-4 rounded-lg">
+                            <div class="text-sm text-gray-400 uppercase">Overall P-Value</div>
+                            <div class="text-4xl font-bold text-white my-1">${overallResult.pValue.toFixed(6)}</div>
+                            <div class="text-lg font-semibold ${overallSignificanceClass}">
+                                ${overallSignificanceText} (p ${overallResult.isSignificant ? '<' : '>='} ${ALPHA})
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // --- Render Post-Hoc Card ---
+                if (postHocResult) {
+                    postHocCard.classList.remove('hidden');
+                    let postHocHTML = `
+                        <div class="result-card-header p-4">
+                            <h2 class="text-xl font-semibold text-white">Step 2: Pairwise Tests (Bonferroni Correction)</h2>
+                        </div>
+                        <div class="p-6 space-y-4">
+                            <p class="text-gray-300">Since Step 1 was significant, we now test every pair to find the specific winners. A correction is applied to prevent false positives.</p>
+                            <div class="bg-gray-900 p-4 rounded-lg">
+                                <h4 class="font-semibold text-white mb-2">Correction Details</h4>
+                                <div class="text-sm text-gray-400">
+                                    <p>Original Alpha: <span class="font-medium text-white">${ALPHA}</span></p>
+                                    <p>Number of Comparisons: <span class="font-medium text-white">${postHocResult.numComparisons}</span></p>
+                                    <p class="font-bold text-white mt-1">Corrected Alpha: ${ALPHA} / ${postHocResult.numComparisons} = <span class="text-lg text-blue-400">${postHocResult.bonferroniAlpha.toFixed(6)}</span></p>
+                                </div>
+                                <p class="text-sm text-gray-300 mt-2">A pair is only significant if its p-value is <span class="font-bold">${postHocResult.bonferroniAlpha.toFixed(6)}</span>.</p>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold text-white mb-2">Significant Findings:</h4>
+                                ${renderPostHocFindings(postHocResult, bestVariant)}
+                            </div>
+                        </div>
+                    `;
+                    postHocCard.innerHTML = postHocHTML;
+                } else {
+                    postHocCard.classList.add('hidden');
+                }
+                
+                // --- Render Conclusion Card ---
+                conclusionCard.innerHTML = renderConclusion(variants, overallResult, postHocResult, bestVariant);
+
+                // Scroll to results
+                resultsContainer.scrollIntoView({ behavior: 'smooth' });
+            }
+
+            function renderPostHocFindings(postHocResult, bestVariant) {
+                if (postHocResult.findings.length === 0) {
+                    return `<p class="text-gray-400">No individual pair was significant after applying the Bonferroni correction.</p>`;
+                }
+                
+                let findingsHTML = `<ul class="space-y-2">`;
+                postHocResult.findings.forEach(({ v1, v2, pValue }) => {
+                    const winner = v1.rate > v2.rate ? v1 : v2;
+                    const loser = v1.rate > v2.rate ? v2 : v1;
+                    const isBestWinner = winner.name === bestVariant.name;
+
+                    findingsHTML += `
+                        <li class="bg-gray-900 p-3 rounded-lg border-l-4 ${isBestWinner ? 'border-green-500' : 'border-gray-600'}">
+                            <span class="font-bold ${isBestWinner ? 'text-green-400' : 'text-white'}">${winner.name}</span>
+                            <span class="text-gray-400">is significantly better than</span>
+                            <span class="font-bold text-white">${loser.name}</span>
+                            <span class="block text-sm text-gray-500">(p-value: ${pValue.toFixed(6)})</span>
+                        </li>
+                    `;
+                });
+                findingsHTML += `</ul>`;
+                return findingsHTML;
+            }
+
+            function renderConclusion(variants, overallResult, postHocResult, bestVariant) {
+                let title, message;
+                
+                if (!overallResult.isSignificant) {
+                    title = "Conclusion: Inconclusive";
+                    message = `The overall test was not statistically significant (p &ge; ${ALPHA}). This means that while ${bestVariant.name} had the highest conversion rate, the difference is not large enough to prove it wasn't just random chance. <strong class="text-white">You cannot confidently declare a winner.</strong>`;
+                } else if (postHocResult && postHocResult.findings.length === 0) {
+                    title = "Conclusion: Be Cautious";
+                    message = `The overall test *was* significant, but after applying the Bonferroni correction, no single pair was statistically different. This suggests that while there is a difference in the group, no single variant is a clear-cut winner. <strong class="text-white">${bestVariant.name} is the top performer, but not a statistically significant one.</strong>`;
+                } else {
+                    // Check if the best variant had any significant wins
+                    const bestVariantWins = postHocResult.findings.some(f => 
+                        (f.v1.name === bestVariant.name && f.v1.rate > f.v2.rate) ||
+                        (f.v2.name === bestVariant.name && f.v2.rate > f.v1.rate)
+                    );
+                    
+                    if (bestVariantWins) {
+                        title = `Conclusion: ${bestVariant.name} is the Winner!`;
+                        message = `<strong class="text-green-400">${bestVariant.name} is the statistically significant winner.</strong> It showed a conversion rate of <strong class="text-white">${(bestVariant.rate * 100).toFixed(3)}%</strong> and was proven to be better than at least one other variant, even after the strict Bonferroni correction.`;
+                    } else {
+                        title = `Conclusion: Mixed Results`;
+                        message = `This is an unusual result. While ${bestVariant.name} had the highest conversion rate, it was not *significantly* better than the others. However, significant differences *were* found between other, lower-performing variants. <strong class="text-white">You can choose ${bestVariant.name} as the practical winner, but the statistical evidence for its superiority is not strong.</strong>`;
+                    }
+                }
+                
+                return `
+                    <h2 class="text-2xl font-semibold mb-3 ${overallResult.isSignificant && postHocResult && postHocResult.findings.length > 0 ? 'text-green-400' : 'text-amber-400'}">${title}</h2>
+                    <p class="text-lg text-gray-300">${message}</p>
+                `;
+            }
+        });
+    </script>
+</body>
+</html>

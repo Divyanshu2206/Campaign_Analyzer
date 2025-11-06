@@ -1,0 +1,231 @@
+import sys
+from scipy.stats import chi2_contingency
+from itertools import combinations
+
+# --- Constants ---
+# We use a 95% confidence level, so our significance threshold (alpha) is 0.05.
+# This is the industry standard for A/B testing.
+ALPHA = 0.05
+
+def get_variant_data():
+    """
+    Prompts the user to get the number of variants and the data for each.
+    Handles input validation to ensure numbers are valid.
+    """
+    variants = []
+    
+    # 1. Get the number of variants
+    while True:
+        try:
+            num_variants = int(input("Enter the total number of variants (e.g., 4): "))
+            if num_variants < 2:
+                print("Error: You must have at least 2 variants to compare.")
+            else:
+                break
+        except ValueError:
+            print("Error: Please enter a valid whole number.")
+
+    print("\n--- Enter Data for Each Variant ---")
+    
+    # 2. Get data for each variant
+    for i in range(num_variants):
+        name = f"Variant {chr(65 + i)}"  # Generates names: A, B, C, ...
+        print(f"\n--- {name} ---")
+        
+        # Get 'Delivered' (Attempts)
+        while True:
+            try:
+                delivered = int(input(f"Enter # of 'Delivered' for {name}: "))
+                if delivered <= 0:
+                    print("Error: 'Delivered' must be a positive number.")
+                else:
+                    break
+            except ValueError:
+                print("Error: Please enter a valid whole number.")
+
+        # Get 'Conversions' (Opens, Clicks, etc.)
+        while True:
+            try:
+                converted = int(input(f"Enter # of 'Conversions' for {name}: "))
+                if converted < 0:
+                    print("Error: 'Conversions' cannot be negative.")
+                elif converted > delivered:
+                    print(f"Error: 'Conversions' ({converted}) cannot be more than 'Delivered' ({delivered}).")
+                else:
+                    break
+            except ValueError:
+                print("Error: Please enter a valid whole number.")
+        
+        # Store the variant data
+        variants.append({
+            "name": name,
+            "delivered": delivered,
+            "converted": converted,
+            "rate": converted / delivered,
+            "not_converted": delivered - converted
+        })
+        
+    return variants
+
+def perform_overall_test(variants):
+    """
+    Performs a Chi-Squared (χ²) test on all variants at once.
+    This "omnibus" test answers: "Is there *any* significant difference in this group?"
+    
+    The `chi2_contingency` function requires a "contingency table" (a list of lists)
+    in the format: [[converts_A, non_converts_A],
+                    [converts_B, non_converts_B],
+                    ...]
+    """
+    print("\n--- Step 1: Overall Chi-Squared (χ²) Test ---")
+    
+    # Build the contingency table from our variant data
+    contingency_table = [[v['converted'], v['not_converted']] for v in variants]
+    
+    # Perform the test
+    # g: The chi-squared test statistic (not used here)
+    # p_value: The probability that the observed differences are due to random chance.
+    # dof: Degrees of freedom (not used here)
+    # expected: The "expected" frequencies if all variants performed the same (not used here)
+    g, p_value, dof, expected = chi2_contingency(contingency_table)
+    
+    print(f"Overall Test p-value: {p_value:.6f}")
+    
+    if p_value < ALPHA:
+        print(f"Result: Significant! (p < {ALPHA}).")
+        print("There is a statistically significant difference somewhere in the group.")
+        return True, p_value
+    else:
+        print(f"Result: Not Significant. (p >= {ALPHA}).")
+        print("The differences between variants are likely due to random chance. The test is inconclusive.")
+        return False, p_value
+
+def perform_post_hoc_tests(variants):
+    """
+    Performs pairwise 2x2 Chi-Squared tests for all unique pairs of variants.
+    This is only done if the overall test was significant.
+    
+    It applies the Bonferroni correction to avoid false positives.
+    """
+    
+    # Get all unique pairs of variants (e.g., (A,B), (A,C), (A,D), (B,C), (B,D), (C,D))
+    pairs = list(combinations(variants, 2))
+    
+    # --- Bonferroni Correction ---
+    # This is the industry standard for A/B/n testing.
+    # We divide our original alpha (0.05) by the number of comparisons we're making.
+    # This gives us a new, stricter alpha to prevent false positives (Type I errors).
+    num_comparisons = len(pairs)
+    bonferroni_alpha = ALPHA / num_comparisons
+    
+    print("\n--- Step 2: Post-Hoc Pairwise Tests (with Bonferroni Correction) ---")
+    print(f"Number of variants: {len(variants)}")
+    print(f"Number of unique pairwise comparisons: {num_comparisons}")
+    print(f"Original Alpha: {ALPHA}")
+    print(f"Bonferroni-Corrected Alpha: {ALPHA} / {num_comparisons} = {bonferroni_alpha:.6f}")
+    print("A pair is only significant if its p-value is LESS than this new alpha.")
+    
+    significant_findings = []
+
+    # Run a 2x2 Chi-Squared test for each pair
+    for v1, v2 in pairs:
+        pair_table = [
+            [v1['converted'], v1['not_converted']],
+            [v2['converted'], v2['not_converted']]
+        ]
+        
+        g, p_value, dof, expected = chi2_contingency(pair_table)
+        
+        if p_value < bonferroni_alpha:
+            # We found a statistically significant difference!
+            significant_findings.append((v1, v2, p_value))
+            
+    return significant_findings
+
+def print_final_summary(variants, is_significant, post_hoc_findings):
+    """
+    Prints the final summary and determines the "best" variant.
+    """
+    
+    # Find the variant with the highest conversion rate (the "on-paper" winner)
+    best_variant = max(variants, key=lambda v: v['rate'])
+    
+    print("\n================== FINAL RESULTS ==================")
+    print("\n--- Performance by Conversion Rate ---")
+    
+    # Sort variants by rate, from best to worst, for a clean report
+    sorted_variants = sorted(variants, key=lambda v: v['rate'], reverse=True)
+    
+    for v in sorted_variants:
+        is_best_tag = "<- BEST RATE" if v['name'] == best_variant['name'] else ""
+        print(f"  {v['name']}: {v['converted']} / {v['delivered']} = {v['rate'] * 100:.4f}% {is_best_tag}")
+
+    print("\n--- Statistical Conclusion ---")
+    
+    if not is_significant:
+        print(f"The overall test was NOT significant (p-value >= {ALPHA}).")
+        print("You cannot confidently declare a winner. The observed differences are likely due to random chance.")
+        print(f"Despite {best_variant['name']} having the highest rate, it is not statistically significant.")
+        print("===================================================")
+        return
+
+    if not post_hoc_findings:
+        print(f"The overall test WAS significant, but...")
+        print("After applying the Bonferroni correction, no individual pair was significantly different.")
+        print("This can happen, and it means you should be cautious.")
+        print(f"While {best_variant['name']} has the best rate, it is not *significantly* better than the others.")
+        print("===================================================")
+        return
+
+    # We have a clear winner!
+    print(f"The best performing variant by rate is: {best_variant['name']} ({best_variant['rate'] * 100:.4f}%)")
+    print("\nStatistically Significant Wins for this variant:")
+    
+    # Filter the findings to only show comparisons involving the best variant
+    best_variant_wins = []
+    for v1, v2, p_value in post_hoc_findings:
+        # Check if the pair includes the best variant AND the best variant won
+        if v1['name'] == best_variant['name'] and v1['rate'] > v2['rate']:
+            best_variant_wins.append((v2, p_value))
+        elif v2['name'] == best_variant['name'] and v2['rate'] > v1['rate']:
+            best_variant_wins.append((v1, p_value))
+    
+    if best_variant_wins:
+        for v_opponent, p_value in best_variant_wins:
+            print(f"  - {best_variant['name']} ({best_variant['rate'] * 100:.4f}%) is significantly better than {v_opponent['name']} ({v_opponent['rate'] * 100:.4f}%)")
+            print(f"    (p-value: {p_value:.6f})")
+    else:
+        print(f"  - (None)")
+        print(f"  NOTE: This is unusual. It means {best_variant['name']} had the highest rate,")
+        print("  but its wins were not statistically significant after correction,")
+        print("  while other, lower-performing variants *were* significantly different from each other.")
+        print("  This suggests you should treat the result with caution.")
+
+    print("===================================================")
+
+
+def main():
+    try:
+        # 1. Get all data from the user
+        variants_data = get_variant_data()
+        
+        # 2. Run the overall test
+        is_significant, overall_p = perform_overall_test(variants_data)
+        
+        post_hoc_findings = []
+        if is_significant:
+            # 3. If the overall test is significant, run pairwise tests
+            post_hoc_findings = perform_post_hoc_tests(variants_data)
+            
+        # 4. Print the final summary
+        print_final_summary(variants_data, is_significant, post_hoc_findings)
+        
+    except KeyboardInterrupt:
+        print("\n\nCalculation cancelled by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
